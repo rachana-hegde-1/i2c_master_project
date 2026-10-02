@@ -3,16 +3,20 @@
 RTL design and verification of a configurable I2C master controller (Verilog).
 
 ## Structure
-- rtl/   — RTL source modules (P1–P5)
-- tb/    — Testbench, slave model, drivers/monitor/scoreboard (P6)
-- sim/   — Simulation run scripts/outputs
-- waves/ — VCD waveform dumps
-- docs/  — Interface contract and documentation
+- rtl/   â€” RTL source modules (P1â€“P5)
+- tb/    â€” Testbench, slave model, drivers/monitor/scoreboard (P6)
+- sim/   â€” Simulation run scripts/outputs
+- waves/ â€” VCD waveform dumps
+- docs/  â€” Interface contract and documentation
 
 ## Branch convention
-- main — stable, integrated code only
-- p<n>-<short-name> — individual work branches, e.g. p2-clock-gen, p6-verif-infra
+- main â€” stable, integrated code only
+- p<n>-<short-name> â€” individual work branches, e.g. p2-clock-gen, p6-infra
 - Compile/test your module standalone before opening a PR to main
 
 ## Build/sim flow
-iverilog -> vvp -> GTKWave
+```
+make sim    # compile + run
+make wave   # open GTKWave
+make clean  # remove build artifacts
+```
