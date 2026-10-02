@@ -1,9 +1,9 @@
 # I²C Master Controller — Interface Contract
 
-**Project:** RTL Design of I²C Master in Verilog HDL  
-**Role Owner:** P1 — Architect & Integration Lead  
-**File:** `interface_contract.md`  
-**Version:** 1.0  
+**Project:** RTL Design of I²C Master in Verilog HDL
+**Role Owner:** P1 — Architect & Integration Lead
+**File:** `interface_contract.md`
+**Version:** 1.0
 **Status:** Working implementation contract
 
 ---
@@ -775,5 +775,5 @@ Waveform Verification
 Final Integrated Design
 ```
 
-**Document owner:** P1 — Architect & Integration Lead  
+**Document owner:** P1 — Architect & Integration Lead
 **File:** `interface_contract.md`
