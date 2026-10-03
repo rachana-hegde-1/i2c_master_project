@@ -1,31 +1,31 @@
 `timescale 1ns/1ps
+
 `include "i2c_defs.vh"
 
 module i2c_bit_ctrl (
     input  wire       clk,
     input  wire       rst_n,
-
-    // Timing tick from P2
     input  wire       tick,
 
-    // Control to/from P2
-    output wire       running,
-    output wire       stall,
+    // Command interface from P4
+    input  wire       bit_vld,
+    input  wire [2:0] bit_cmd,
+    input  wire       bit_din,
 
-    // Command interface from P4/P5
-    input  wire       cmd_valid,
-    input  wire [2:0] cmd,
-    input  wire       din,
-
+    // Status/data back to P4
     output wire       ready,
-    output reg        done,
-    output reg        dout,
-    output reg        arb_lost,
+    output reg        bit_done,
+    output reg        bit_dout,
+    output reg        bit_al,
 
     // Bus status
     output reg        bus_busy,
 
-    // Physical I2C bus inputs
+    // Clock stretching
+    output wire       stall,
+    output wire       running,
+
+    // I2C bus inputs
     input  wire       scl_i,
     input  wire       sda_i,
 
@@ -38,13 +38,17 @@ module i2c_bit_ctrl (
     // Synchronize SCL and SDA
     // ------------------------------------------------------------
 
-    reg scl_meta, scl_sync;
-    reg sda_meta, sda_sync;
+    reg scl_meta;
+    reg scl_sync;
+
+    reg sda_meta;
+    reg sda_sync;
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             scl_meta <= 1'b1;
             scl_sync <= 1'b1;
+
             sda_meta <= 1'b1;
             sda_sync <= 1'b1;
         end
@@ -57,101 +61,233 @@ module i2c_bit_ctrl (
         end
     end
 
+
     // ------------------------------------------------------------
-    // Internal registers
+    // Internal state
     // ------------------------------------------------------------
 
     reg        run;
-    reg [1:0]  phase;
     reg [2:0]  current_cmd;
     reg        current_din;
+
+    reg [1:0]  phase;
+
+    localparam PH0 = 2'd0;
+    localparam PH1 = 2'd1;
+    localparam PH2 = 2'd2;
+    localparam PH3 = 2'd3;
+
 
     assign running = run;
     assign ready   = ~run;
 
+
     // ------------------------------------------------------------
     // Clock stretching
     // ------------------------------------------------------------
+    // If we release SCL but the external bus keeps it LOW,
+    // wait until SCL actually becomes HIGH.
 
     assign stall = run && !scl_oe && !scl_sync;
 
-    // ------------------------------------------------------------
-    // Line control
-    //
-    // oe = 1 -> pull line LOW
-    // oe = 0 -> release line
-    //
-    // lines[1] = SCL OE
-    // lines[0] = SDA OE
-    // ------------------------------------------------------------
-
-    function [1:0] lines;
-        input [2:0] c;
-        input [1:0] ph;
-        input       d;
-
-        begin
-            case (c)
-
-                // START
-                `I2C_BCMD_START:
-                    case (ph)
-                        2'd0:    lines = 2'b10;
-                        2'd1:    lines = 2'b00;
-                        2'd2:    lines = 2'b01;
-                        default: lines = 2'b11;
-                    endcase
-
-                // STOP
-                `I2C_BCMD_STOP:
-                    case (ph)
-                        2'd0:    lines = 2'b11;
-                        2'd1:    lines = 2'b01;
-                        default: lines = 2'b00;
-                    endcase
-
-                // WRITE / ACK
-                `I2C_BCMD_WRITE,
-                `I2C_BCMD_ACK:
-                    case (ph)
-                        2'd0:    lines = {1'b1, ~d};
-                        2'd3:    lines = {1'b1, ~d};
-                        default: lines = {1'b0, ~d};
-                    endcase
-
-                // READ
-                `I2C_BCMD_READ:
-                    case (ph)
-                        2'd0:    lines = 2'b10;
-                        2'd3:    lines = 2'b10;
-                        default: lines = 2'b00;
-                    endcase
-
-                default:
-                    lines = 2'b00;
-
-            endcase
-        end
-    endfunction
 
     // ------------------------------------------------------------
-    // Generate SDA/SCL outputs
+    // Generate SCL/SDA control
     // ------------------------------------------------------------
 
     always @(*) begin
 
-        scl_oe = 1'b0;
-        sda_oe = 1'b0;
+        // Default: drive both lines LOW
+        scl_oe = 1'b1;
+        sda_oe = 1'b1;
 
-        if (run) begin
-            {scl_oe, sda_oe} =
-                lines(current_cmd, phase, current_din);
-        end
+        case (current_cmd)
+
+            // ----------------------------------------------------
+            // START
+            // ----------------------------------------------------
+            `I2C_BCMD_START: begin
+
+                case (phase)
+
+                    PH0: begin
+                        // SCL LOW, SDA LOW
+                        scl_oe = 1'b1;
+                        sda_oe = 1'b1;
+                    end
+
+                    PH1: begin
+                        // Release both
+                        scl_oe = 1'b0;
+                        sda_oe = 1'b0;
+                    end
+
+                    PH2: begin
+                        // SCL HIGH, SDA LOW
+                        scl_oe = 1'b0;
+                        sda_oe = 1'b1;
+                    end
+
+                    default: begin
+                        // SCL LOW, SDA LOW
+                        scl_oe = 1'b1;
+                        sda_oe = 1'b1;
+                    end
+
+                endcase
+
+            end
+
+
+            // ----------------------------------------------------
+            // STOP
+            // ----------------------------------------------------
+            `I2C_BCMD_STOP: begin
+
+                case (phase)
+
+                    PH0: begin
+                        // SCL LOW, SDA LOW
+                        scl_oe = 1'b1;
+                        sda_oe = 1'b1;
+                    end
+
+                    PH1: begin
+                        // SCL HIGH, SDA LOW
+                        scl_oe = 1'b0;
+                        sda_oe = 1'b1;
+                    end
+
+                    default: begin
+                        // Release both -> STOP condition
+                        scl_oe = 1'b0;
+                        sda_oe = 1'b0;
+                    end
+
+                endcase
+
+            end
+
+
+            // ----------------------------------------------------
+            // WRITE BIT
+            // ----------------------------------------------------
+            `I2C_BCMD_WRITE: begin
+
+                case (phase)
+
+                    PH0: begin
+                        // SCL LOW
+                        scl_oe = 1'b1;
+
+                        // Drive 0, release for 1
+                        sda_oe = ~current_din;
+                    end
+
+                    PH1: begin
+                        // SCL HIGH
+                        scl_oe = 1'b0;
+                        sda_oe = ~current_din;
+                    end
+
+                    PH2: begin
+                        // SCL HIGH
+                        scl_oe = 1'b0;
+                        sda_oe = ~current_din;
+                    end
+
+                    default: begin
+                        // SCL LOW
+                        scl_oe = 1'b1;
+                        sda_oe = ~current_din;
+                    end
+
+                endcase
+
+            end
+
+
+            // ----------------------------------------------------
+            // READ BIT
+            // ----------------------------------------------------
+            `I2C_BCMD_READ: begin
+
+                // Release SDA so slave can drive it
+
+                case (phase)
+
+                    PH0: begin
+                        scl_oe = 1'b1;
+                        sda_oe = 1'b0;
+                    end
+
+                    PH1: begin
+                        scl_oe = 1'b0;
+                        sda_oe = 1'b0;
+                    end
+
+                    PH2: begin
+                        scl_oe = 1'b0;
+                        sda_oe = 1'b0;
+                    end
+
+                    default: begin
+                        scl_oe = 1'b1;
+                        sda_oe = 1'b0;
+                    end
+
+                endcase
+
+            end
+
+
+            // ----------------------------------------------------
+            // ACK
+            // ----------------------------------------------------
+            `I2C_BCMD_ACK: begin
+
+                case (phase)
+
+                    PH0: begin
+                        scl_oe = 1'b1;
+
+                        // bit_din = 0 -> ACK
+                        // bit_din = 1 -> NACK
+                        sda_oe = ~current_din;
+                    end
+
+                    PH1: begin
+                        scl_oe = 1'b0;
+                        sda_oe = ~current_din;
+                    end
+
+                    PH2: begin
+                        scl_oe = 1'b0;
+                        sda_oe = ~current_din;
+                    end
+
+                    default: begin
+                        scl_oe = 1'b1;
+                        sda_oe = ~current_din;
+                    end
+
+                endcase
+
+            end
+
+
+            default: begin
+                scl_oe = 1'b1;
+                sda_oe = 1'b1;
+            end
+
+        endcase
 
     end
 
+
     // ------------------------------------------------------------
-    // Main command controller
+    // Command execution FSM
     // ------------------------------------------------------------
 
     always @(posedge clk or negedge rst_n) begin
@@ -159,75 +295,96 @@ module i2c_bit_ctrl (
         if (!rst_n) begin
 
             run         <= 1'b0;
-            phase       <= 2'd0;
+
             current_cmd <= `I2C_BCMD_NOP;
             current_din <= 1'b0;
 
-            done        <= 1'b0;
-            dout        <= 1'b0;
-            arb_lost    <= 1'b0;
+            phase       <= PH0;
+
+            bit_done    <= 1'b0;
+            bit_dout    <= 1'b1;
+            bit_al      <= 1'b0;
+
             bus_busy    <= 1'b0;
 
         end
         else begin
 
-            // done is one clock pulse
-            done <= 1'b0;
+            // done is a one-clock pulse
+            bit_done <= 1'b0;
 
             // ----------------------------------------------------
-            // Accept new command
+            // Start a new command
             // ----------------------------------------------------
 
             if (!run) begin
 
-                if (cmd_valid) begin
+                if (bit_vld) begin
 
-                    run         <= 1'b1;
-                    phase       <= 2'd0;
-                    current_cmd <= cmd;
-                    current_din <= din;
+                    current_cmd <= bit_cmd;
+                    current_din <= bit_din;
 
-                    arb_lost    <= 1'b0;
+                    phase <= PH0;
+                    run   <= 1'b1;
+
+                    bit_al <= 1'b0;
+
+                    // Bus becomes busy after START
+                    if (bit_cmd == `I2C_BCMD_START)
+                        bus_busy <= 1'b1;
 
                 end
 
             end
 
+
             // ----------------------------------------------------
-            // Execute command
+            // Command currently running
             // ----------------------------------------------------
 
             else begin
 
+                // Wait for P2 timing tick
                 if (tick && !stall) begin
 
-                    // READ: sample SDA during high phase
-                    if ((current_cmd == `I2C_BCMD_READ) &&
-                        (phase == 2'd2)) begin
+                    // ------------------------------------------------
+                    // READ: sample SDA while SCL is HIGH
+                    // ------------------------------------------------
 
-                        dout <= sda_sync;
+                    if ((current_cmd == `I2C_BCMD_READ) &&
+                        (phase == PH2)) begin
+
+                        bit_dout <= sda_sync;
 
                     end
 
-                    // Arbitration detection
+
+                    // ------------------------------------------------
+                    // Arbitration check during WRITE of '1'
+                    // ------------------------------------------------
+
                     if ((current_cmd == `I2C_BCMD_WRITE) &&
+                        (phase == PH2) &&
                         (current_din == 1'b1) &&
-                        (phase == 2'd2) &&
                         (sda_sync == 1'b0)) begin
 
-                        arb_lost <= 1'b1;
+                        bit_al <= 1'b1;
 
                     end
 
-                    // Last phase
-                    if (phase == 2'd3) begin
 
-                        run  <= 1'b0;
-                        done <= 1'b1;
+                    // ------------------------------------------------
+                    // Move to next phase
+                    // ------------------------------------------------
 
-                        if (current_cmd == `I2C_BCMD_START)
-                            bus_busy <= 1'b1;
+                    if (phase == PH3) begin
 
+                        phase <= PH0;
+                        run   <= 1'b0;
+
+                        bit_done <= 1'b1;
+
+                        // STOP releases bus
                         if (current_cmd == `I2C_BCMD_STOP)
                             bus_busy <= 1'b0;
 
@@ -239,8 +396,11 @@ module i2c_bit_ctrl (
                     end
 
                 end
+
             end
+
         end
+
     end
 
 endmodule
