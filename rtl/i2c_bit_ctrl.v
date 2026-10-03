@@ -387,6 +387,7 @@ module i2c_bit_ctrl (
                         // STOP releases bus
                         if (current_cmd == `I2C_BCMD_STOP)
                             bus_busy <= 1'b0;
+                            current_cmd <= `I2C_BCMD_NOP;
 
                     end
                     else begin
